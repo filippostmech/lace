@@ -28,6 +28,78 @@ import os
 os.makedirs('/workspace', exist_ok=True)
 `);
       await pyodide.loadPackage("micropip");
+
+      pyodide.runPython(`
+import os
+
+files = {
+    "main.py": '''# LACE - Local Agent Compute Environment
+# This is your main entry point. Press Ctrl+Enter to run!
+
+from utils import banner, fibonacci
+
+banner("LACE Sandbox")
+
+print("First 10 Fibonacci numbers:")
+fibs = fibonacci(10)
+for i, n in enumerate(fibs):
+    print(f"  F({i}) = {n}")
+
+print()
+print("Try editing this file or creating new ones!")
+''',
+    "utils.py": '''"""Utility functions for the LACE sandbox."""
+
+
+def banner(title: str, width: int = 40) -> None:
+    """Print a decorative banner."""
+    print("=" * width)
+    print(f"{title:^{width}}")
+    print("=" * width)
+    print()
+
+
+def fibonacci(n: int) -> list[int]:
+    """Return the first n Fibonacci numbers."""
+    if n <= 0:
+        return []
+    seq = [0, 1]
+    while len(seq) < n:
+        seq.append(seq[-1] + seq[-2])
+    return seq[:n]
+''',
+    "data_example.py": '''"""Example: working with data structures."""
+
+students = [
+    {"name": "Alice", "grade": 92},
+    {"name": "Bob", "grade": 85},
+    {"name": "Charlie", "grade": 78},
+    {"name": "Diana", "grade": 95},
+    {"name": "Eve", "grade": 88},
+]
+
+print("Student Report")
+print("-" * 30)
+
+for s in students:
+    bar = "#" * (s["grade"] // 5)
+    print(f"  {s['name']:<10} {s['grade']:>3}  {bar}")
+
+avg = sum(s["grade"] for s in students) / len(students)
+top = max(students, key=lambda s: s["grade"])
+
+print("-" * 30)
+print(f"  Average: {avg:.1f}")
+print(f"  Top student: {top['name']} ({top['grade']})")
+''',
+}
+
+for name, content in files.items():
+    path = os.path.join('/workspace', name)
+    if not os.path.exists(path):
+        with open(path, 'w') as f:
+            f.write(content)
+`);
       self.postMessage({ type: "status", status: "ready" });
     } catch (err) {
       self.postMessage({ type: "error", text: "Failed to initialize Pyodide: " + err.message });

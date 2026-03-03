@@ -84,6 +84,15 @@ export default function LacePage() {
     [activeFile, code, readFile, writeFile]
   );
 
+  useEffect(() => {
+    if (files.length > 0 && !activeFile) {
+      const main = files.find((f) => f === "main.py");
+      if (main) {
+        handleSelectFile(main);
+      }
+    }
+  }, [files]);
+
   const handleCreateFile = useCallback(
     (path: string) => {
       const initial = path.endsWith(".py")
