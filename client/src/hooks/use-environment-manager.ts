@@ -257,7 +257,7 @@ export function useEnvironmentManager() {
           addLine(targetId, "system", "Snapshot loaded successfully.");
           worker.postMessage({ type: "list-files" });
         }
-      } else if (msg.type === "snapshot") {
+      } else if (msg.type === "snapshot" && !msg.requestId) {
         const envForSnapshot = environmentsRef.current.find(e => e.id === targetId);
         const envName = envForSnapshot?.name || "env";
         try {
@@ -488,15 +488,16 @@ export function useEnvironmentManager() {
       if (ws.worker && ws.statusRef === "ready") {
         addLine(targetId, "system", "Enabling persistence — saving current files to browser storage...");
         try {
+          const persistReqId = "persist_" + (++requestIdCounter);
           const result = await new Promise<string>((resolve) => {
             const handler = (e: MessageEvent) => {
-              if (e.data.type === "snapshot") {
+              if (e.data.type === "snapshot" && e.data.requestId === persistReqId) {
                 ws.worker?.removeEventListener("message", handler);
                 resolve(e.data.data);
               }
             };
             ws.worker!.addEventListener("message", handler);
-            ws.worker!.postMessage({ type: "save-snapshot" });
+            ws.worker!.postMessage({ type: "save-snapshot", requestId: persistReqId });
             setTimeout(() => {
               ws.worker?.removeEventListener("message", handler);
               resolve("[]");

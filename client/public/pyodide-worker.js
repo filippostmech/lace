@@ -337,7 +337,7 @@ def collect_files(root):
 
 json.dumps(collect_files('/workspace'))
 `);
-      self.postMessage({ type: "snapshot", data: result });
+      self.postMessage({ type: "snapshot", data: result, requestId: requestId || undefined });
     } catch (err) {
       self.postMessage({ type: "error", text: "Snapshot failed: " + err.message });
     }
