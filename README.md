@@ -5,10 +5,13 @@ A browser-based Python sandbox powered by Pyodide (CPython compiled to WebAssemb
 ## Features
 
 - **In-Browser Python Execution** — Full CPython 3.11 running via WebAssembly, no backend required
+- **Multiple Environments** — Create independent Python environments, each with its own worker thread, filesystem, and terminal output. Run code in parallel across environments
 - **Monaco Code Editor** — VS Code's editor with Python syntax highlighting, bracket matching, and smooth scrolling
-- **Multi-File Workspace** — Create, rename, and delete files in an in-memory `/workspace` filesystem
+- **Multi-File Workspace** — Create, rename, and delete files in an in-memory `/workspace` filesystem per environment
+- **Persistent Storage** — Toggle IndexedDB persistence per environment so workspace files survive page refreshes and browser restarts
+- **Storage Manager** — View, preview, export, and clear stored files from a built-in panel
 - **Package Management** — Install Python packages (NumPy, Pandas, Matplotlib, etc.) via micropip
-- **Workspace Snapshots** — Export and import your entire workspace as JSON for persistence and sharing
+- **Workspace Snapshots** — Export and import your entire workspace as JSON for sharing
 - **Streaming Terminal Output** — Real-time stdout/stderr display with auto-scroll
 - **Execution Timeout** — Automatic 10-second timeout with worker termination to prevent runaway scripts
 - **Resizable Split Panes** — Adjustable file explorer, editor, and terminal panels
@@ -17,26 +20,34 @@ A browser-based Python sandbox powered by Pyodide (CPython compiled to WebAssemb
 
 ## Architecture
 
-LACE is a **frontend-only application**. The Express backend serves static files only — all Python execution happens client-side in a Web Worker.
+LACE is a **frontend-only application**. The Express backend serves static files only — all Python execution happens client-side in Web Workers.
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Browser                                        │
-│  ┌───────────────────────────────────────────┐  │
-│  │  React App (Main Thread)                  │  │
-│  │  ├── Monaco Editor                        │  │
-│  │  ├── File Explorer                        │  │
-│  │  ├── Terminal Output                      │  │
-│  │  └── Package Installer                    │  │
-│  └──────────────┬────────────────────────────┘  │
-│                 │ postMessage                    │
-│  ┌──────────────▼────────────────────────────┐  │
-│  │  Web Worker                               │  │
-│  │  ├── Pyodide (CPython 3.11 / WASM)        │  │
-│  │  ├── In-memory filesystem (/workspace)    │  │
-│  │  └── micropip (package installer)         │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Browser                                                │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  React App (Main Thread)                          │  │
+│  │  ├── Environment Switcher (tabs for N envs)       │  │
+│  │  ├── Monaco Editor                                │  │
+│  │  ├── File Explorer                                │  │
+│  │  ├── Terminal Output                              │  │
+│  │  ├── Package Installer                            │  │
+│  │  └── Storage Manager                              │  │
+│  └──────────────┬────────────────────────────────────┘  │
+│                 │ postMessage (per environment)          │
+│  ┌──────────────▼────────────────────────────────────┐  │
+│  │  Web Worker(s) — one per environment              │  │
+│  │  ├── Pyodide (CPython 3.11 / WASM)                │  │
+│  │  ├── In-memory filesystem (/workspace)            │  │
+│  │  └── micropip (package installer)                 │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  IndexedDB "lace-persistence" (optional)          │  │
+│  │  ├── files store: { envId, path, content }        │  │
+│  │  └── environments store: { id, name, color, ... } │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Tech Stack
@@ -102,11 +113,36 @@ Click **Run** or press `Ctrl+Enter` to execute the current file. Output streams 
 - **Delete files** — Click the trash icon on hover
 - **Switch files** — Click any file in the explorer; changes auto-save when switching
 
-### 5. Install Packages
+### 5. Multiple Environments
+
+- **Create** — Click the + tab in the environment switcher to create a new isolated environment
+- **Switch** — Click any environment tab to switch; each has its own files, terminal, and runtime
+- **Rename** — Double-click a tab name to rename inline
+- **Remove** — Hover over a tab and click the X to remove (cannot remove the last one)
+- **Parallel execution** — Each environment runs in its own Web Worker thread, so you can run code in multiple environments simultaneously
+
+### 6. Persistent Storage
+
+- **Enable** — Click the **Persist** button in the toolbar to save workspace files to browser storage (IndexedDB)
+- **Automatic sync** — When persistence is on, every file write/delete/rename is mirrored to IndexedDB
+- **Survives refresh** — Persisted files are automatically restored when you init the environment after a page reload
+- **Disable** — Click Persist again to turn it off and clear stored files for that environment
+- **Per-environment** — Each environment can independently have persistence on or off
+
+### 7. Storage Manager
+
+Click the hard drive icon in the header to open the Storage Manager panel. From here you can:
+- See which environments have persistence enabled
+- View how many files and how much space each environment uses
+- Expand file lists and preview stored file contents
+- Export an environment's stored files as JSON
+- Clear storage per environment or clear all storage at once
+
+### 8. Install Packages
 
 Expand the **Packages** section in the sidebar to install Python packages via micropip. Popular packages (NumPy, Pandas, Matplotlib, etc.) are available as one-click installs.
 
-### 6. Snapshots
+### 9. Snapshots
 
 - **Save** — Click Save (or `Ctrl+S`) to export all workspace files as a JSON file
 - **Load** — Click Load to import a previously saved snapshot
@@ -126,31 +162,35 @@ Expand the **Packages** section in the sidebar to install Python packages via mi
 lace/
 ├── client/
 │   ├── public/
-│   │   ├── pyodide-worker.js    # Web Worker running Pyodide
+│   │   ├── pyodide-worker.js        # Web Worker running Pyodide
 │   │   └── favicon.png
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── file-explorer.tsx     # Sidebar file tree
-│   │   │   ├── package-installer.tsx # Package management UI
-│   │   │   ├── shortcuts-help.tsx    # Keyboard shortcuts overlay
-│   │   │   ├── terminal-output.tsx   # Streaming output display
-│   │   │   ├── toolbar.tsx           # Control buttons
-│   │   │   └── ui/                   # shadcn/ui components
+│   │   │   ├── environment-switcher.tsx  # Environment tab bar
+│   │   │   ├── file-explorer.tsx         # Sidebar file tree
+│   │   │   ├── package-installer.tsx     # Package management UI
+│   │   │   ├── shortcuts-help.tsx        # Keyboard shortcuts overlay
+│   │   │   ├── storage-manager.tsx       # Browser storage viewer/manager
+│   │   │   ├── terminal-output.tsx       # Streaming output display
+│   │   │   ├── toolbar.tsx               # Control buttons + persist toggle
+│   │   │   └── ui/                       # shadcn/ui components
 │   │   ├── hooks/
-│   │   │   └── use-pyodide.ts   # Pyodide Web Worker lifecycle hook
+│   │   │   ├── use-environment-manager.ts # Multi-env lifecycle + persistence
+│   │   │   └── use-pyodide.ts             # Type definitions
 │   │   ├── pages/
-│   │   │   └── lace.tsx         # Main application page
+│   │   │   └── lace.tsx               # Main application page
 │   │   ├── lib/
-│   │   │   └── utils.ts         # Utility functions
-│   │   ├── App.tsx              # Root component with routing
-│   │   ├── main.tsx             # Entry point
-│   │   └── index.css            # Global styles and design tokens
+│   │   │   ├── persistence.ts         # IndexedDB storage layer
+│   │   │   └── utils.ts               # Utility functions
+│   │   ├── App.tsx                    # Root component with routing
+│   │   ├── main.tsx                   # Entry point
+│   │   └── index.css                  # Global styles and design tokens
 │   └── index.html
 ├── server/
-│   ├── index.ts                 # Server entry point
-│   ├── routes.ts                # API routes (minimal)
-│   ├── static.ts                # Static file serving
-│   └── vite.ts                  # Vite dev server integration
+│   ├── index.ts                       # Server entry point
+│   ├── routes.ts                      # API routes (minimal)
+│   ├── static.ts                      # Static file serving
+│   └── vite.ts                        # Vite dev server integration
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
@@ -159,28 +199,35 @@ lace/
 
 ## How It Works
 
+### Multi-Environment System
+
+Each environment is fully independent with its own Web Worker, Pyodide instance, filesystem, terminal output, and installed packages. The `useEnvironmentManager` hook manages the lifecycle of all environments. Environment metadata (names, colors, persistence flags) is stored in IndexedDB so the environment list survives page refreshes.
+
 ### Pyodide Loading
 
 When the user clicks "Init", the app creates a Web Worker that loads Pyodide from the jsDelivr CDN. Pyodide is a full CPython 3.11 interpreter compiled to WebAssembly, capable of running most pure-Python packages.
 
 ### Web Worker Communication
 
-All Python execution runs in a dedicated Web Worker thread, keeping the UI responsive. The main thread and worker communicate via `postMessage`:
+All Python execution runs in dedicated Web Worker threads, keeping the UI responsive. The main thread and workers communicate via `postMessage`:
 
-- **Main → Worker**: Commands like `init`, `run`, `list-files`, `read-file`, `write-file`, `install-package`
+- **Main → Worker**: Commands like `init`, `run`, `list-files`, `read-file`, `write-file`, `install-package`, `clear-workspace`
 - **Worker → Main**: Results like `stdout`, `stderr`, `status`, `file-list`, `file-content`, `snapshot`
 
-### File System
+### File System & Persistence
 
-Pyodide provides an in-memory filesystem (Emscripten FS). LACE creates a `/workspace` directory where all user files live. File operations (create, read, write, delete, rename) are executed as Python code within the worker.
+Pyodide provides an in-memory filesystem (Emscripten MEMFS). LACE creates a `/workspace` directory where all user files live. File operations are executed as Python code within the worker.
+
+When persistence is enabled for an environment, file operations are also mirrored to IndexedDB. On the next init, persisted files are loaded from IndexedDB into the worker's filesystem, replacing the default scaffold files.
 
 ### Security
 
 - All code runs in the browser sandbox — nothing is sent to any server
-- The Web Worker provides thread isolation from the main UI
+- Each Web Worker provides thread isolation from the main UI
 - File paths are sanitized to prevent directory traversal
 - A 10-second execution timeout automatically terminates runaway scripts
 - Snapshots are pure JSON exported locally
+- Persisted data stays in the browser's IndexedDB — never transmitted
 
 ## Contributing
 
