@@ -1,6 +1,30 @@
-# LACE - Local Agent Compute Environment
+<p align="center">
+  <img src="assets/lace-logo.png" alt="LACE Logo" width="180" />
+</p>
 
-A browser-based Python sandbox powered by Pyodide (CPython compiled to WebAssembly). Write, edit, and run Python code entirely in your browser — no server, no installation, no data leaves your machine.
+<h1 align="center">LACE</h1>
+
+<p align="center">
+  <strong>Local Agent Compute Environment</strong><br/>
+  A browser-based Python sandbox powered by Pyodide (CPython compiled to WebAssembly).<br/>
+  Write, edit, and run Python code entirely in your browser — no server, no installation, no data leaves your machine.
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#getting-started">Get Started</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#how-it-works">How It Works</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <a href="https://substack.com"><img src="https://img.shields.io/badge/Substack-Read%20Article-orange?logo=substack&logoColor=white" alt="Substack Article" /></a>
+</p>
+
+---
 
 ## Features
 
