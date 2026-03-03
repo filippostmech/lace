@@ -9,13 +9,23 @@ export interface TerminalLine {
   timestamp: number;
 }
 
+export interface InstalledPackage {
+  name: string;
+  version: string;
+}
+
 let lineIdCounter = 0;
+let requestIdCounter = 0;
 
 export function usePyodide() {
   const [status, setStatus] = useState<RuntimeStatus>("idle");
   const [lines, setLines] = useState<TerminalLine[]>([]);
+  const [files, setFiles] = useState<string[]>([]);
+  const [installedPackages, setInstalledPackages] = useState<InstalledPackage[]>([]);
+  const [installingPackage, setInstallingPackage] = useState<string | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingReadsRef = useRef<Map<string, (data: string) => void>>(new Map());
 
   const addLine = useCallback((type: TerminalLine["type"], text: string) => {
     const newLine: TerminalLine = {
@@ -40,44 +50,51 @@ export function usePyodide() {
       workerRef.current.terminate();
       workerRef.current = null;
     }
+    pendingReadsRef.current.forEach((resolve) => resolve(""));
+    pendingReadsRef.current.clear();
   }, []);
 
   const initRuntime = useCallback(() => {
     destroyWorker();
     setStatus("loading");
+    setFiles([]);
+    setInstalledPackages([]);
     addLine("system", "Initializing Pyodide runtime...");
 
     const worker = new Worker("/pyodide-worker.js");
     workerRef.current = worker;
 
     worker.onmessage = (e) => {
-      const { type, text, status: s, data } = e.data;
+      const msg = e.data;
 
-      if (type === "stdout") {
-        addLine("stdout", text);
-      } else if (type === "stderr") {
-        addLine("stderr", text);
-      } else if (type === "error") {
-        addLine("stderr", text);
-        setStatus("error");
-      } else if (type === "status") {
-        if (s === "ready") {
+      if (msg.type === "stdout") {
+        addLine("stdout", msg.text);
+      } else if (msg.type === "stderr") {
+        addLine("stderr", msg.text);
+      } else if (msg.type === "error") {
+        addLine("stderr", msg.text);
+        setStatus((prev) => (prev === "loading" ? "error" : prev));
+      } else if (msg.type === "status") {
+        if (msg.status === "ready") {
           setStatus("ready");
           addLine("system", "Runtime ready. Python 3.11 (Pyodide/WASM)");
-        } else if (s === "running") {
+          worker.postMessage({ type: "list-files" });
+          worker.postMessage({ type: "list-packages" });
+        } else if (msg.status === "running") {
           setStatus("running");
-        } else if (s === "done") {
+        } else if (msg.status === "done") {
           if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
           }
           setStatus("ready");
-        } else if (s === "snapshot-loaded") {
+        } else if (msg.status === "snapshot-loaded") {
           addLine("system", "Snapshot loaded successfully.");
+          worker.postMessage({ type: "list-files" });
         }
-      } else if (type === "snapshot") {
+      } else if (msg.type === "snapshot") {
         try {
-          const blob = new Blob([data], { type: "application/json" });
+          const blob = new Blob([msg.data], { type: "application/json" });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
@@ -88,6 +105,35 @@ export function usePyodide() {
         } catch {
           addLine("stderr", "Failed to export snapshot.");
         }
+      } else if (msg.type === "file-list") {
+        setFiles(msg.files || []);
+      } else if (msg.type === "file-content") {
+        const rid = msg.requestId;
+        if (rid && pendingReadsRef.current.has(rid)) {
+          const resolve = pendingReadsRef.current.get(rid)!;
+          pendingReadsRef.current.delete(rid);
+          resolve(msg.content || "");
+        }
+      } else if (msg.type === "file-written") {
+        worker.postMessage({ type: "list-files" });
+      } else if (msg.type === "file-deleted") {
+        worker.postMessage({ type: "list-files" });
+      } else if (msg.type === "file-renamed") {
+        worker.postMessage({ type: "list-files" });
+      } else if (msg.type === "package-status") {
+        if (msg.status === "installing") {
+          setInstallingPackage(msg.packageName);
+          addLine("system", `Installing ${msg.packageName}...`);
+        } else if (msg.status === "installed") {
+          setInstallingPackage(null);
+          addLine("system", `Package ${msg.packageName} installed successfully.`);
+          worker.postMessage({ type: "list-packages" });
+        } else if (msg.status === "error") {
+          setInstallingPackage(null);
+          addLine("stderr", `Failed to install ${msg.packageName}: ${msg.error}`);
+        }
+      } else if (msg.type === "package-list") {
+        setInstalledPackages(msg.packages || []);
       }
     };
 
@@ -102,7 +148,6 @@ export function usePyodide() {
   const runCode = useCallback(
     (code: string, timeout = 10000) => {
       if (!workerRef.current || status !== "ready") return;
-
       workerRef.current.postMessage({ type: "run", code });
 
       timeoutRef.current = setTimeout(() => {
@@ -137,14 +182,88 @@ export function usePyodide() {
     [status]
   );
 
+  const readFile = useCallback(
+    (path: string): Promise<string> => {
+      return new Promise((resolve) => {
+        if (!workerRef.current) {
+          resolve("");
+          return;
+        }
+        const rid = "req_" + (++requestIdCounter);
+        pendingReadsRef.current.set(rid, resolve);
+        workerRef.current.postMessage({ type: "read-file", path, requestId: rid });
+
+        setTimeout(() => {
+          if (pendingReadsRef.current.has(rid)) {
+            pendingReadsRef.current.delete(rid);
+            resolve("");
+          }
+        }, 5000);
+      });
+    },
+    []
+  );
+
+  const writeFile = useCallback(
+    (path: string, content: string) => {
+      if (!workerRef.current) return;
+      workerRef.current.postMessage({ type: "write-file", path, content });
+    },
+    []
+  );
+
+  const deleteFile = useCallback(
+    (path: string) => {
+      if (!workerRef.current) return;
+      workerRef.current.postMessage({ type: "delete-file", path });
+    },
+    []
+  );
+
+  const renameFile = useCallback(
+    (oldPath: string, newPath: string) => {
+      if (!workerRef.current) return;
+      workerRef.current.postMessage({ type: "rename-file", path: oldPath, newPath });
+    },
+    []
+  );
+
+  const installPackage = useCallback(
+    (packageName: string) => {
+      if (!workerRef.current || status !== "ready") return;
+      workerRef.current.postMessage({ type: "install-package", packageName });
+    },
+    [status]
+  );
+
+  const listPackages = useCallback(() => {
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({ type: "list-packages" });
+  }, []);
+
+  const listFiles = useCallback(() => {
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({ type: "list-files" });
+  }, []);
+
   return {
     status,
     lines,
+    files,
+    installedPackages,
+    installingPackage,
     initRuntime,
     runCode,
     stopExecution,
     clearTerminal,
     saveSnapshot,
     loadSnapshot,
+    listFiles,
+    readFile,
+    writeFile,
+    deleteFile,
+    renameFile,
+    installPackage,
+    listPackages,
   };
 }

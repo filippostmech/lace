@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import {
   ResizablePanelGroup,
@@ -7,8 +7,12 @@ import {
 } from "@/components/ui/resizable";
 import { Toolbar } from "@/components/toolbar";
 import { TerminalOutput } from "@/components/terminal-output";
+import { FileExplorer } from "@/components/file-explorer";
+import { PackageInstaller } from "@/components/package-installer";
+import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { usePyodide } from "@/hooks/use-pyodide";
-import { Terminal } from "lucide-react";
+import { Terminal, HelpCircle, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 const DEFAULT_CODE = `# Welcome to LACE - Local Agent Compute Environment
 # Write Python code here and click Run (or press Ctrl+Enter)
@@ -25,40 +29,148 @@ print("  Python running in your browser!")
 `;
 
 export default function LacePage() {
+  const [activeFile, setActiveFile] = useState<string | null>(null);
   const [code, setCode] = useState(DEFAULT_CODE);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const editorRef = useRef<any>(null);
+  const fileContentsRef = useRef<Map<string, string>>(new Map());
+
   const {
     status,
     lines,
+    files,
+    installedPackages,
+    installingPackage,
     initRuntime,
     runCode,
     stopExecution,
     clearTerminal,
     saveSnapshot,
     loadSnapshot,
+    readFile,
+    writeFile,
+    deleteFile,
+    renameFile,
+    installPackage,
+    listPackages,
   } = usePyodide();
 
   const handleRun = useCallback(() => {
+    if (activeFile) {
+      writeFile(activeFile, code);
+    }
     runCode(code);
-  }, [code, runCode]);
+  }, [code, runCode, activeFile, writeFile]);
 
-  const handleEditorMount = useCallback((editor: any) => {
-    editor.addAction({
-      id: "run-code",
-      label: "Run Code",
-      keybindings: [2048 | 3],
-      run: () => {
+  const handleSelectFile = useCallback(
+    async (path: string) => {
+      if (activeFile && activeFile !== path) {
+        fileContentsRef.current.set(activeFile, code);
+        writeFile(activeFile, code);
+      }
+
+      if (fileContentsRef.current.has(path)) {
+        setCode(fileContentsRef.current.get(path) || "");
+        setActiveFile(path);
+        return;
+      }
+
+      const content = await readFile(path);
+      fileContentsRef.current.set(path, content);
+      setCode(content);
+      setActiveFile(path);
+    },
+    [activeFile, code, readFile, writeFile]
+  );
+
+  const handleCreateFile = useCallback(
+    (path: string) => {
+      const initial = path.endsWith(".py")
+        ? `# ${path}\n`
+        : "";
+      writeFile(path, initial);
+      fileContentsRef.current.set(path, initial);
+      setCode(initial);
+      setActiveFile(path);
+    },
+    [writeFile]
+  );
+
+  const handleDeleteFile = useCallback(
+    (path: string) => {
+      deleteFile(path);
+      fileContentsRef.current.delete(path);
+      if (activeFile === path) {
+        setActiveFile(null);
+        setCode(DEFAULT_CODE);
+      }
+    },
+    [deleteFile, activeFile]
+  );
+
+  const handleRenameFile = useCallback(
+    (oldPath: string, newPath: string) => {
+      const content = fileContentsRef.current.get(oldPath) || "";
+      fileContentsRef.current.delete(oldPath);
+      fileContentsRef.current.set(newPath, content);
+      renameFile(oldPath, newPath);
+      if (activeFile === oldPath) {
+        setActiveFile(newPath);
+      }
+    },
+    [renameFile, activeFile]
+  );
+
+  const handleEditorMount = useCallback(
+    (editor: any) => {
+      editorRef.current = editor;
+
+      editor.addAction({
+        id: "run-code",
+        label: "Run Code",
+        keybindings: [2048 | 3],
+        run: () => {
+          const val = editor.getValue();
+          runCode(val);
+        },
+      });
+    },
+    [runCode]
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        setShowShortcuts((prev) => !prev);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
         if (status === "ready") {
-          runCode(editor.getValue());
+          if (activeFile) {
+            const val = editorRef.current?.getValue() || code;
+            writeFile(activeFile, val);
+          }
+          saveSnapshot();
         }
-      },
-    });
-  }, [status, runCode]);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [status, saveSnapshot, activeFile, code, writeFile]);
+
+  const displayFileName = activeFile || "untitled";
 
   return (
     <div className="flex flex-col h-screen bg-background" data-testid="lace-page">
       <header className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-[#262626]">
         <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-8 h-8 rounded-md bg-[hsl(88,50.4%,52.5%)] text-black font-bold text-sm">
+          <div className="flex items-center justify-center w-8 h-8 rounded-md bg-[hsl(88,50.4%,52.5%)] text-black font-bold text-sm select-none">
             L
           </div>
           <div>
@@ -71,9 +183,18 @@ export default function LacePage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground font-mono tracking-wider">
-            Pyodide/WASM • Python 3.11 • Offline
+          <span className="text-[10px] text-muted-foreground font-mono tracking-wider hidden sm:inline">
+            Pyodide/WASM &bull; Python 3.11 &bull; Offline
           </span>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="w-7 h-7"
+            onClick={() => setShowShortcuts(true)}
+            data-testid="button-help"
+          >
+            <HelpCircle className="w-4 h-4 text-muted-foreground" />
+          </Button>
         </div>
       </header>
 
@@ -89,13 +210,60 @@ export default function LacePage() {
 
       <div className="flex-1 overflow-hidden">
         <ResizablePanelGroup direction="horizontal" className="h-full">
-          <ResizablePanel defaultSize={60} minSize={30}>
+          {sidebarOpen && (
+            <>
+              <ResizablePanel defaultSize={16} minSize={12} maxSize={25}>
+                <div className="flex flex-col h-full">
+                  <FileExplorer
+                    files={files}
+                    activeFile={activeFile}
+                    status={status}
+                    onSelectFile={handleSelectFile}
+                    onCreateFile={handleCreateFile}
+                    onDeleteFile={handleDeleteFile}
+                    onRenameFile={handleRenameFile}
+                  />
+                  <PackageInstaller
+                    status={status}
+                    installedPackages={installedPackages}
+                    installingPackage={installingPackage}
+                    onInstall={installPackage}
+                    onRefresh={listPackages}
+                  />
+                </div>
+              </ResizablePanel>
+              <ResizableHandle className="w-[3px] bg-[#262626] transition-colors data-[resize-handle-active]:bg-[hsl(88,50.4%,52.5%)]" />
+            </>
+          )}
+
+          <ResizablePanel defaultSize={sidebarOpen ? 52 : 60} minSize={30}>
             <div className="flex flex-col h-full">
-              <div className="flex items-center gap-2 px-4 py-1.5 border-b border-[#262626] bg-[#0a0a0a]">
-                <div className="w-3 h-3 rounded-full bg-[hsl(88,50.4%,52.5%)] opacity-60" />
-                <span className="text-xs font-mono text-muted-foreground tracking-wide">
-                  main.py
+              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#262626] bg-[#0a0a0a]">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="w-6 h-6 shrink-0"
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  data-testid="button-toggle-sidebar"
+                >
+                  {sidebarOpen ? (
+                    <PanelLeftClose className="w-3.5 h-3.5 text-muted-foreground" />
+                  ) : (
+                    <PanelLeft className="w-3.5 h-3.5 text-muted-foreground" />
+                  )}
+                </Button>
+                <div className="w-2.5 h-2.5 rounded-full bg-[hsl(88,50.4%,52.5%)] opacity-60 shrink-0" />
+                <span className="text-xs font-mono text-muted-foreground tracking-wide truncate">
+                  {displayFileName}
                 </span>
+                {status === "running" && (
+                  <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[hsl(253.5,100%,75%)] animate-pulse" />
+                    <span className="text-[10px] font-mono text-[hsl(253.5,100%,75%)]">
+                      executing
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="flex-1" data-testid="editor-container">
                 <Editor
@@ -133,13 +301,20 @@ export default function LacePage() {
 
           <ResizableHandle className="w-[3px] bg-[#262626] transition-colors data-[resize-handle-active]:bg-[hsl(88,50.4%,52.5%)]" />
 
-          <ResizablePanel defaultSize={40} minSize={20}>
+          <ResizablePanel defaultSize={sidebarOpen ? 32 : 40} minSize={20}>
             <div className="flex flex-col h-full bg-[#0a0a0a]">
               <div className="flex items-center gap-2 px-4 py-1.5 border-b border-[#262626]">
                 <Terminal className="w-3.5 h-3.5 text-muted-foreground" />
                 <span className="text-xs font-mono text-muted-foreground tracking-wide">
                   output
                 </span>
+                {status === "running" && (
+                  <div className="flex items-center gap-1 ml-2">
+                    <span className="inline-block w-1 h-3 bg-[hsl(253.5,100%,75%)] animate-pulse rounded-full" />
+                    <span className="inline-block w-1 h-3 bg-[hsl(253.5,100%,75%)] animate-pulse rounded-full [animation-delay:150ms]" />
+                    <span className="inline-block w-1 h-3 bg-[hsl(253.5,100%,75%)] animate-pulse rounded-full [animation-delay:300ms]" />
+                  </div>
+                )}
                 {lines.length > 0 && (
                   <span className="text-[10px] font-mono text-muted-foreground ml-auto opacity-50">
                     {lines.length} lines
@@ -153,6 +328,8 @@ export default function LacePage() {
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
+
+      <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
   );
 }
