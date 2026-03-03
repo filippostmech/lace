@@ -10,7 +10,8 @@ import { TerminalOutput } from "@/components/terminal-output";
 import { FileExplorer } from "@/components/file-explorer";
 import { PackageInstaller } from "@/components/package-installer";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
-import { usePyodide } from "@/hooks/use-pyodide";
+import { EnvironmentSwitcher } from "@/components/environment-switcher";
+import { useEnvironmentManager } from "@/hooks/use-environment-manager";
 import { Terminal, HelpCircle, PanelLeftClose, PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -29,26 +30,22 @@ print("  Python running in your browser!")
 `;
 
 export default function LacePage() {
-  const [activeFile, setActiveFile] = useState<string | null>(null);
-  const [code, setCode] = useState(DEFAULT_CODE);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const editorRef = useRef<any>(null);
-  const fileContentsRef = useRef<Map<string, string>>(new Map());
 
-  const activeFileRef = useRef<string | null>(null);
-  const codeRef = useRef(DEFAULT_CODE);
-  const runCodeRef = useRef<(code: string) => void>(() => {});
-
-  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
-  useEffect(() => { codeRef.current = code; }, [code]);
+  const [activeFilePerEnv, setActiveFilePerEnv] = useState<Map<string, string | null>>(new Map());
+  const [codePerEnv, setCodePerEnv] = useState<Map<string, string>>(new Map());
+  const fileContentsPerEnv = useRef<Map<string, Map<string, string>>>(new Map());
 
   const {
-    status,
-    lines,
-    files,
-    installedPackages,
-    installingPackage,
+    environments,
+    activeEnvId,
+    activeEnv,
+    createEnvironment,
+    removeEnvironment,
+    renameEnvironment,
+    switchEnvironment,
     initRuntime,
     runCode,
     stopExecution,
@@ -61,9 +58,43 @@ export default function LacePage() {
     renameFile,
     installPackage,
     listPackages,
-  } = usePyodide();
+  } = useEnvironmentManager();
 
+  const activeFile = activeFilePerEnv.get(activeEnvId) || null;
+  const code = codePerEnv.get(activeEnvId) ?? DEFAULT_CODE;
+
+  const activeFileRef = useRef<string | null>(null);
+  const codeRef = useRef(DEFAULT_CODE);
+  const runCodeRef = useRef<(code: string) => void>(() => {});
+  const activeEnvIdRef = useRef(activeEnvId);
+
+  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
+  useEffect(() => { codeRef.current = code; }, [code]);
   useEffect(() => { runCodeRef.current = runCode; }, [runCode]);
+  useEffect(() => { activeEnvIdRef.current = activeEnvId; }, [activeEnvId]);
+
+  const setActiveFile = useCallback((file: string | null) => {
+    setActiveFilePerEnv(prev => {
+      const next = new Map(prev);
+      next.set(activeEnvIdRef.current, file);
+      return next;
+    });
+  }, []);
+
+  const setCode = useCallback((newCode: string) => {
+    setCodePerEnv(prev => {
+      const next = new Map(prev);
+      next.set(activeEnvIdRef.current, newCode);
+      return next;
+    });
+  }, []);
+
+  const getFileContents = useCallback((envId: string): Map<string, string> => {
+    if (!fileContentsPerEnv.current.has(envId)) {
+      fileContentsPerEnv.current.set(envId, new Map());
+    }
+    return fileContentsPerEnv.current.get(envId)!;
+  }, []);
 
   const handleRun = useCallback(() => {
     const currentFile = activeFileRef.current;
@@ -76,79 +107,82 @@ export default function LacePage() {
 
   const handleSelectFile = useCallback(
     async (path: string) => {
+      const envId = activeEnvIdRef.current;
       const prevFile = activeFileRef.current;
       const prevCode = codeRef.current;
+      const cache = getFileContents(envId);
 
       if (prevFile && prevFile !== path) {
-        fileContentsRef.current.set(prevFile, prevCode);
+        cache.set(prevFile, prevCode);
         writeFile(prevFile, prevCode);
       }
 
-      if (fileContentsRef.current.has(path)) {
-        setCode(fileContentsRef.current.get(path) || "");
+      if (cache.has(path)) {
+        setCode(cache.get(path) || "");
         setActiveFile(path);
         return;
       }
 
       const content = await readFile(path);
-      fileContentsRef.current.set(path, content);
+      cache.set(path, content);
       setCode(content);
       setActiveFile(path);
     },
-    [readFile, writeFile]
+    [readFile, writeFile, getFileContents, setCode, setActiveFile]
   );
 
   useEffect(() => {
-    if (files.length > 0 && !activeFileRef.current) {
-      const main = files.find((f) => f === "main.py");
+    const envFiles = activeEnv?.files || [];
+    if (envFiles.length > 0 && !activeFileRef.current) {
+      const main = envFiles.find((f) => f === "main.py");
       if (main) {
         handleSelectFile(main);
       }
     }
-  }, [files, handleSelectFile]);
+  }, [activeEnv?.files, handleSelectFile]);
 
   const handleCreateFile = useCallback(
     (path: string) => {
-      const initial = path.endsWith(".py")
-        ? `# ${path}\n`
-        : "";
+      const initial = path.endsWith(".py") ? `# ${path}\n` : "";
       writeFile(path, initial);
-      fileContentsRef.current.set(path, initial);
+      const cache = getFileContents(activeEnvIdRef.current);
+      cache.set(path, initial);
       setCode(initial);
       setActiveFile(path);
     },
-    [writeFile]
+    [writeFile, getFileContents, setCode, setActiveFile]
   );
 
   const handleDeleteFile = useCallback(
     (path: string) => {
       deleteFile(path);
-      fileContentsRef.current.delete(path);
+      const cache = getFileContents(activeEnvIdRef.current);
+      cache.delete(path);
       if (activeFileRef.current === path) {
         setActiveFile(null);
         setCode(DEFAULT_CODE);
       }
     },
-    [deleteFile]
+    [deleteFile, getFileContents, setCode, setActiveFile]
   );
 
   const handleRenameFile = useCallback(
     (oldPath: string, newPath: string) => {
-      const content = fileContentsRef.current.get(oldPath) || "";
-      fileContentsRef.current.delete(oldPath);
-      fileContentsRef.current.set(newPath, content);
+      const cache = getFileContents(activeEnvIdRef.current);
+      const content = cache.get(oldPath) || "";
+      cache.delete(oldPath);
+      cache.set(newPath, content);
       renameFile(oldPath, newPath);
       if (activeFileRef.current === oldPath) {
         setActiveFile(newPath);
       }
     },
-    [renameFile]
+    [renameFile, getFileContents, setActiveFile]
   );
 
   const handleEditorMount = useCallback(
     (editor: any) => {
       editorRef.current = editor;
-
       editor.addAction({
         id: "run-code",
         label: "Run Code",
@@ -161,6 +195,31 @@ export default function LacePage() {
     },
     []
   );
+
+  const handleSwitchEnv = useCallback((envId: string) => {
+    const prevFile = activeFileRef.current;
+    const prevCode = codeRef.current;
+    const prevEnvId = activeEnvIdRef.current;
+
+    if (prevFile) {
+      const cache = getFileContents(prevEnvId);
+      cache.set(prevFile, prevCode);
+    }
+
+    switchEnvironment(envId);
+  }, [switchEnvironment, getFileContents]);
+
+  const handleCreateEnv = useCallback(() => {
+    const id = createEnvironment();
+    switchEnvironment(id);
+  }, [createEnvironment, switchEnvironment]);
+
+  const handleRemoveEnv = useCallback((envId: string) => {
+    removeEnvironment(envId);
+    setActiveFilePerEnv(prev => { const next = new Map(prev); next.delete(envId); return next; });
+    setCodePerEnv(prev => { const next = new Map(prev); next.delete(envId); return next; });
+    fileContentsPerEnv.current.delete(envId);
+  }, [removeEnvironment]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -187,6 +246,11 @@ export default function LacePage() {
   }, [saveSnapshot, writeFile]);
 
   const displayFileName = activeFile || "untitled";
+  const status = activeEnv?.status || "idle";
+  const lines = activeEnv?.lines || [];
+  const files = activeEnv?.files || [];
+  const installedPackages = activeEnv?.installedPackages || [];
+  const installingPackage = activeEnv?.installingPackage || null;
 
   return (
     <div className="flex flex-col h-screen bg-background" data-testid="lace-page">
@@ -206,7 +270,7 @@ export default function LacePage() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-foreground font-mono tracking-wider hidden sm:inline">
-            Pyodide/WASM &bull; Python 3.11 &bull; Offline
+            Pyodide/WASM &bull; Python 3.11 &bull; {environments.length} env{environments.length !== 1 ? "s" : ""}
           </span>
           <Button
             size="icon"
@@ -220,14 +284,25 @@ export default function LacePage() {
         </div>
       </header>
 
+      <EnvironmentSwitcher
+        environments={environments}
+        activeEnvId={activeEnvId}
+        onSwitch={handleSwitchEnv}
+        onCreate={handleCreateEnv}
+        onRemove={handleRemoveEnv}
+        onRename={renameEnvironment}
+      />
+
       <Toolbar
         status={status}
-        onInit={initRuntime}
+        envName={activeEnv?.name}
+        envColor={activeEnv?.color}
+        onInit={() => initRuntime()}
         onRun={handleRun}
-        onStop={stopExecution}
-        onClear={clearTerminal}
-        onSaveSnapshot={saveSnapshot}
-        onLoadSnapshot={loadSnapshot}
+        onStop={() => stopExecution()}
+        onClear={() => clearTerminal()}
+        onSaveSnapshot={() => saveSnapshot()}
+        onLoadSnapshot={(json) => loadSnapshot(json)}
       />
 
       <div className="flex-1 overflow-hidden">
@@ -274,7 +349,10 @@ export default function LacePage() {
                     <PanelLeft className="w-3.5 h-3.5 text-muted-foreground" />
                   )}
                 </Button>
-                <div className="w-2.5 h-2.5 rounded-full bg-[hsl(88,50.4%,52.5%)] opacity-60 shrink-0" />
+                <div
+                  className="w-2.5 h-2.5 rounded-full opacity-60 shrink-0"
+                  style={{ backgroundColor: activeEnv?.color || "hsl(88,50.4%,52.5%)" }}
+                />
                 <span className="text-xs font-mono text-muted-foreground tracking-wide truncate">
                   {displayFileName}
                 </span>

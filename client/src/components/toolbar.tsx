@@ -14,6 +14,8 @@ import type { RuntimeStatus } from "@/hooks/use-pyodide";
 
 interface ToolbarProps {
   status: RuntimeStatus;
+  envName?: string;
+  envColor?: string;
   onInit: () => void;
   onRun: () => void;
   onStop: () => void;
@@ -32,6 +34,8 @@ const statusConfig: Record<RuntimeStatus, { label: string; color: string }> = {
 
 export function Toolbar({
   status,
+  envName,
+  envColor,
   onInit,
   onRun,
   onStop,
@@ -61,10 +65,21 @@ export function Toolbar({
   return (
     <div className="flex items-center gap-1.5 px-3 py-2 border-b border-[#262626] flex-wrap">
       <div className="flex items-center gap-2 mr-3">
+        {envColor && (
+          <div
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ backgroundColor: envColor }}
+          />
+        )}
         <div className={`w-2 h-2 rounded-full ${color} ${status === "running" ? "animate-pulse" : ""}`} />
         <Badge variant="outline" className="text-xs font-mono tracking-wide border-[#262626] text-muted-foreground" data-testid="badge-status">
           {label}
         </Badge>
+        {envName && (
+          <span className="text-[10px] font-mono text-muted-foreground tracking-wide truncate max-w-[120px] hidden sm:inline" data-testid="text-env-name">
+            {envName}
+          </span>
+        )}
       </div>
 
       <div className="w-px h-5 bg-[#262626] mr-1" />
