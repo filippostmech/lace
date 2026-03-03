@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 export type RuntimeStatus = "idle" | "loading" | "ready" | "running" | "error";
 
@@ -26,6 +26,11 @@ export function usePyodide() {
   const workerRef = useRef<Worker | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingReadsRef = useRef<Map<string, (data: string) => void>>(new Map());
+  const statusRef = useRef<RuntimeStatus>("idle");
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const addLine = useCallback((type: TerminalLine["type"], text: string) => {
     const newLine: TerminalLine = {
@@ -57,6 +62,7 @@ export function usePyodide() {
   const initRuntime = useCallback(() => {
     destroyWorker();
     setStatus("loading");
+    statusRef.current = "loading";
     setFiles([]);
     setInstalledPackages([]);
     addLine("system", "Initializing Pyodide runtime...");
@@ -74,20 +80,24 @@ export function usePyodide() {
       } else if (msg.type === "error") {
         addLine("stderr", msg.text);
         setStatus((prev) => (prev === "loading" ? "error" : prev));
+        statusRef.current = "error";
       } else if (msg.type === "status") {
         if (msg.status === "ready") {
           setStatus("ready");
+          statusRef.current = "ready";
           addLine("system", "Runtime ready. Python 3.11 (Pyodide/WASM)");
           worker.postMessage({ type: "list-files" });
           worker.postMessage({ type: "list-packages" });
         } else if (msg.status === "running") {
           setStatus("running");
+          statusRef.current = "running";
         } else if (msg.status === "done") {
           if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
           }
           setStatus("ready");
+          statusRef.current = "ready";
         } else if (msg.status === "snapshot-loaded") {
           addLine("system", "Snapshot loaded successfully.");
           worker.postMessage({ type: "list-files" });
@@ -140,6 +150,7 @@ export function usePyodide() {
     worker.onerror = () => {
       addLine("stderr", "Worker error occurred.");
       setStatus("error");
+      statusRef.current = "error";
     };
 
     worker.postMessage({ type: "init" });
@@ -147,17 +158,18 @@ export function usePyodide() {
 
   const runCode = useCallback(
     (code: string, timeout = 10000) => {
-      if (!workerRef.current || status !== "ready") return;
+      if (!workerRef.current || statusRef.current !== "ready") return;
       workerRef.current.postMessage({ type: "run", code });
 
       timeoutRef.current = setTimeout(() => {
         addLine("stderr", `Execution timed out after ${timeout / 1000}s. Worker terminated.`);
         destroyWorker();
         setStatus("idle");
+        statusRef.current = "idle";
         addLine("system", "Runtime terminated. Re-initialize to continue.");
       }, timeout);
     },
-    [status, addLine, destroyWorker]
+    [addLine, destroyWorker]
   );
 
   const stopExecution = useCallback(() => {
@@ -165,21 +177,22 @@ export function usePyodide() {
       addLine("system", "Execution stopped. Worker terminated.");
       destroyWorker();
       setStatus("idle");
+      statusRef.current = "idle";
       addLine("system", "Runtime terminated. Re-initialize to continue.");
     }
   }, [destroyWorker, addLine]);
 
   const saveSnapshot = useCallback(() => {
-    if (!workerRef.current || status !== "ready") return;
+    if (!workerRef.current || statusRef.current !== "ready") return;
     workerRef.current.postMessage({ type: "save-snapshot" });
-  }, [status]);
+  }, []);
 
   const loadSnapshot = useCallback(
     (jsonString: string) => {
-      if (!workerRef.current || status !== "ready") return;
+      if (!workerRef.current || statusRef.current !== "ready") return;
       workerRef.current.postMessage({ type: "load-snapshot", snapshot: jsonString });
     },
-    [status]
+    []
   );
 
   const readFile = useCallback(
@@ -230,10 +243,10 @@ export function usePyodide() {
 
   const installPackage = useCallback(
     (packageName: string) => {
-      if (!workerRef.current || status !== "ready") return;
+      if (!workerRef.current || statusRef.current !== "ready") return;
       workerRef.current.postMessage({ type: "install-package", packageName });
     },
-    [status]
+    []
   );
 
   const listPackages = useCallback(() => {

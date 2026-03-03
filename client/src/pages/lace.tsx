@@ -36,6 +36,13 @@ export default function LacePage() {
   const editorRef = useRef<any>(null);
   const fileContentsRef = useRef<Map<string, string>>(new Map());
 
+  const activeFileRef = useRef<string | null>(null);
+  const codeRef = useRef(DEFAULT_CODE);
+  const runCodeRef = useRef<(code: string) => void>(() => {});
+
+  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
+  useEffect(() => { codeRef.current = code; }, [code]);
+
   const {
     status,
     lines,
@@ -56,18 +63,25 @@ export default function LacePage() {
     listPackages,
   } = usePyodide();
 
+  useEffect(() => { runCodeRef.current = runCode; }, [runCode]);
+
   const handleRun = useCallback(() => {
-    if (activeFile) {
-      writeFile(activeFile, code);
+    const currentFile = activeFileRef.current;
+    const currentCode = codeRef.current;
+    if (currentFile) {
+      writeFile(currentFile, currentCode);
     }
-    runCode(code);
-  }, [code, runCode, activeFile, writeFile]);
+    runCodeRef.current(currentCode);
+  }, [writeFile]);
 
   const handleSelectFile = useCallback(
     async (path: string) => {
-      if (activeFile && activeFile !== path) {
-        fileContentsRef.current.set(activeFile, code);
-        writeFile(activeFile, code);
+      const prevFile = activeFileRef.current;
+      const prevCode = codeRef.current;
+
+      if (prevFile && prevFile !== path) {
+        fileContentsRef.current.set(prevFile, prevCode);
+        writeFile(prevFile, prevCode);
       }
 
       if (fileContentsRef.current.has(path)) {
@@ -81,17 +95,17 @@ export default function LacePage() {
       setCode(content);
       setActiveFile(path);
     },
-    [activeFile, code, readFile, writeFile]
+    [readFile, writeFile]
   );
 
   useEffect(() => {
-    if (files.length > 0 && !activeFile) {
+    if (files.length > 0 && !activeFileRef.current) {
       const main = files.find((f) => f === "main.py");
       if (main) {
         handleSelectFile(main);
       }
     }
-  }, [files]);
+  }, [files, handleSelectFile]);
 
   const handleCreateFile = useCallback(
     (path: string) => {
@@ -110,12 +124,12 @@ export default function LacePage() {
     (path: string) => {
       deleteFile(path);
       fileContentsRef.current.delete(path);
-      if (activeFile === path) {
+      if (activeFileRef.current === path) {
         setActiveFile(null);
         setCode(DEFAULT_CODE);
       }
     },
-    [deleteFile, activeFile]
+    [deleteFile]
   );
 
   const handleRenameFile = useCallback(
@@ -124,11 +138,11 @@ export default function LacePage() {
       fileContentsRef.current.delete(oldPath);
       fileContentsRef.current.set(newPath, content);
       renameFile(oldPath, newPath);
-      if (activeFile === oldPath) {
+      if (activeFileRef.current === oldPath) {
         setActiveFile(newPath);
       }
     },
-    [renameFile, activeFile]
+    [renameFile]
   );
 
   const handleEditorMount = useCallback(
@@ -141,11 +155,11 @@ export default function LacePage() {
         keybindings: [2048 | 3],
         run: () => {
           const val = editor.getValue();
-          runCode(val);
+          runCodeRef.current(val);
         },
       });
     },
-    [runCode]
+    []
   );
 
   useEffect(() => {
@@ -157,13 +171,12 @@ export default function LacePage() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        if (status === "ready") {
-          if (activeFile) {
-            const val = editorRef.current?.getValue() || code;
-            writeFile(activeFile, val);
-          }
-          saveSnapshot();
+        const currentFile = activeFileRef.current;
+        if (currentFile) {
+          const val = editorRef.current?.getValue() || codeRef.current;
+          writeFile(currentFile, val);
         }
+        saveSnapshot();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "n") {
         e.preventDefault();
@@ -171,7 +184,7 @@ export default function LacePage() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [status, saveSnapshot, activeFile, code, writeFile]);
+  }, [saveSnapshot, writeFile]);
 
   const displayFileName = activeFile || "untitled";
 

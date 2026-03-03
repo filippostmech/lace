@@ -24,8 +24,10 @@ self.onmessage = async function (e) {
         },
       });
       pyodide.runPython(`
-import os
+import os, sys
 os.makedirs('/workspace', exist_ok=True)
+if '/workspace' not in sys.path:
+    sys.path.insert(0, '/workspace')
 `);
       await pyodide.loadPackage("micropip");
 
@@ -163,10 +165,12 @@ json.dumps(list_workspace())
     try {
       pyodide.globals.set("__read_path__", "/workspace/" + safePath);
       const result = pyodide.runPython(`
+__read_result__ = ""
 with open(__read_path__, 'r') as f:
-    f.read()
+    __read_result__ = f.read()
+__read_result__
 `);
-      pyodide.globals.delete("__read_path__");
+      pyodide.runPython("del __read_path__, __read_result__");
       self.postMessage({ type: "file-content", requestId, path: safePath, content: result });
     } catch (err) {
       self.postMessage({ type: "file-content", requestId, path: safePath, content: "", error: err.message });
