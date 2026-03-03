@@ -177,3 +177,93 @@ export async function saveAllFilesToDB(envId: string, files: { path: string; con
     await saveFileToDB(envId, file.path, file.content);
   }
 }
+
+export interface EnvStorageStats {
+  envId: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface FileInfo {
+  path: string;
+  sizeBytes: number;
+}
+
+export async function getStorageStats(): Promise<EnvStorageStats[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readonly");
+    const store = tx.objectStore(FILES_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const records = (req.result as PersistedFile[]) || [];
+      const statsMap = new Map<string, EnvStorageStats>();
+      for (const r of records) {
+        const existing = statsMap.get(r.envId) || { envId: r.envId, fileCount: 0, totalBytes: 0 };
+        existing.fileCount++;
+        existing.totalBytes += new Blob([r.content]).size;
+        statsMap.set(r.envId, existing);
+      }
+      resolve(Array.from(statsMap.values()));
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getFilesWithSizes(envId: string): Promise<FileInfo[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readonly");
+    const store = tx.objectStore(FILES_STORE);
+    const index = store.index("envId");
+    const req = index.getAll(envId);
+    req.onsuccess = () => {
+      const records = (req.result as PersistedFile[]) || [];
+      resolve(records.map(r => ({ path: r.path, sizeBytes: new Blob([r.content]).size })));
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getTotalStorageSize(): Promise<number> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readonly");
+    const store = tx.objectStore(FILES_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const records = (req.result as PersistedFile[]) || [];
+      let total = 0;
+      for (const r of records) {
+        total += new Blob([r.content]).size;
+      }
+      resolve(total);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getFileContent(envId: string, path: string): Promise<string | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readonly");
+    const store = tx.objectStore(FILES_STORE);
+    const index = store.index("envId_path");
+    const req = index.get([envId, path]);
+    req.onsuccess = () => {
+      const record = req.result as PersistedFile | undefined;
+      resolve(record?.content ?? null);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function clearAllStorage(): Promise<void> {
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(FILES_STORE, "readwrite");
+    const req = tx.objectStore(FILES_STORE).clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}

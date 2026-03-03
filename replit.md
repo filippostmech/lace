@@ -17,6 +17,7 @@ Browser-based Python sandbox powered by Pyodide (CPython compiled to WebAssembly
 - `client/src/components/package-installer.tsx` - UI for installing Python packages via micropip
 - `client/src/components/toolbar.tsx` - Control buttons (Init, Run, Stop, Clear, Save/Load Snapshot, Persist toggle) with environment context
 - `client/src/components/terminal-output.tsx` - Streaming stdout/stderr/system output display
+- `client/src/components/storage-manager.tsx` - Modal panel to view/manage IndexedDB stored files per environment
 - `client/src/components/shortcuts-help.tsx` - Keyboard shortcuts overlay
 
 ### Multi-Environment Architecture
@@ -81,6 +82,7 @@ Browser
 - Resizable split-pane layout
 - Environment tabs: create, switch, rename (double-click), remove
 - Per-environment snapshots with environment name in filename
+- Storage manager panel: view stored files per environment, preview contents, export/clear storage, total usage stats
 
 ## Design Tokens
 - Background: #000000, Cards: #1A1A1A, Primary: lime green (hsl 88 50.4% 52.5%), Accent: purple (hsl 253.5 100% 75%)

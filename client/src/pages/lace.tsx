@@ -10,9 +10,11 @@ import { TerminalOutput } from "@/components/terminal-output";
 import { FileExplorer } from "@/components/file-explorer";
 import { PackageInstaller } from "@/components/package-installer";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
+import { StorageManager } from "@/components/storage-manager";
 import { EnvironmentSwitcher } from "@/components/environment-switcher";
 import { useEnvironmentManager } from "@/hooks/use-environment-manager";
-import { Terminal, HelpCircle, PanelLeftClose, PanelLeft } from "lucide-react";
+import { clearEnvironmentFiles, clearAllStorage } from "@/lib/persistence";
+import { Terminal, HelpCircle, HardDrive, PanelLeftClose, PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const DEFAULT_CODE = `# Welcome to LACE - Local Agent Compute Environment
@@ -32,6 +34,7 @@ print("  Python running in your browser!")
 export default function LacePage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showStorage, setShowStorage] = useState(false);
   const editorRef = useRef<any>(null);
 
   const [activeFilePerEnv, setActiveFilePerEnv] = useState<Map<string, string | null>>(new Map());
@@ -277,6 +280,15 @@ export default function LacePage() {
             size="icon"
             variant="ghost"
             className="w-7 h-7"
+            onClick={() => setShowStorage(true)}
+            data-testid="button-open-storage"
+          >
+            <HardDrive className="w-4 h-4 text-muted-foreground" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="w-7 h-7"
             onClick={() => setShowShortcuts(true)}
             data-testid="button-help"
           >
@@ -433,6 +445,26 @@ export default function LacePage() {
       </div>
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+      <StorageManager
+        open={showStorage}
+        onClose={() => setShowStorage(false)}
+        environments={environments}
+        onClearEnvStorage={(envId) => {
+          clearEnvironmentFiles(envId).catch(() => {});
+          const env = environments.find(e => e.id === envId);
+          if (env?.persistent) {
+            togglePersistence(envId);
+          }
+        }}
+        onClearAllStorage={() => {
+          clearAllStorage().catch(() => {});
+          for (const env of environments) {
+            if (env.persistent) {
+              togglePersistence(env.id);
+            }
+          }
+        }}
+      />
     </div>
   );
 }
