@@ -1,5 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { RuntimeStatus, TerminalLine, InstalledPackage } from "./use-pyodide";
+import {
+  saveFileToDB,
+  deleteFileFromDB,
+  renameFileInDB,
+  loadAllFilesFromDB,
+  clearEnvironmentFiles,
+  saveEnvironmentMeta,
+  loadAllEnvironmentMetas,
+  deleteEnvironmentMeta,
+  saveAllFilesToDB,
+  type EnvironmentMeta,
+} from "@/lib/persistence";
 
 export type { RuntimeStatus, TerminalLine, InstalledPackage };
 
@@ -24,6 +36,7 @@ export interface Environment {
   installingPackage: string | null;
   color: string;
   createdAt: number;
+  persistent: boolean;
 }
 
 interface WorkerState {
@@ -41,6 +54,20 @@ function generateEnvId(): string {
   return "env_" + (++envIdCounter) + "_" + Math.random().toString(36).slice(2, 8);
 }
 
+const ACTIVE_ENV_KEY = "lace-active-env-id";
+
+function saveActiveEnvToStorage(envId: string) {
+  try { localStorage.setItem(ACTIVE_ENV_KEY, envId); } catch {}
+}
+
+function loadActiveEnvFromStorage(): string | null {
+  try { return localStorage.getItem(ACTIVE_ENV_KEY); } catch { return null; }
+}
+
+function envToMeta(env: Environment): EnvironmentMeta {
+  return { id: env.id, name: env.name, color: env.color, persistent: env.persistent, createdAt: env.createdAt };
+}
+
 export function useEnvironmentManager() {
   const [environments, setEnvironments] = useState<Environment[]>(() => {
     const id = generateEnvId();
@@ -54,11 +81,45 @@ export function useEnvironmentManager() {
       installingPackage: null,
       color: ENV_COLORS[0],
       createdAt: Date.now(),
+      persistent: false,
     }];
   });
   const [activeEnvId, setActiveEnvId] = useState<string>(() => environments[0]?.id || "");
+  const [restoredFromDB, setRestoredFromDB] = useState(false);
 
   const workersRef = useRef<Map<string, WorkerState>>(new Map());
+  const environmentsRef = useRef<Environment[]>(environments);
+  useEffect(() => { environmentsRef.current = environments; }, [environments]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAllEnvironmentMetas().then(metas => {
+      if (cancelled || metas.length === 0) {
+        setRestoredFromDB(true);
+        return;
+      }
+      const restored: Environment[] = metas.map(m => ({
+        id: m.id,
+        name: m.name,
+        status: "idle" as RuntimeStatus,
+        lines: [],
+        files: [],
+        installedPackages: [],
+        installingPackage: null,
+        color: m.color,
+        createdAt: m.createdAt,
+        persistent: m.persistent,
+      }));
+      setEnvironments(restored);
+      const savedActiveId = loadActiveEnvFromStorage();
+      const validId = restored.find(e => e.id === savedActiveId)?.id || restored[0].id;
+      setActiveEnvId(validId);
+      setRestoredFromDB(true);
+    }).catch(() => {
+      setRestoredFromDB(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const getWorkerState = useCallback((envId: string): WorkerState => {
     if (!workersRef.current.has(envId)) {
@@ -109,6 +170,42 @@ export function useEnvironmentManager() {
     ws.pendingReads.clear();
   }, []);
 
+  const getEnvPersistent = useCallback((envId: string): boolean => {
+    const env = environmentsRef.current.find(e => e.id === envId);
+    return env?.persistent ?? false;
+  }, []);
+
+  const loadPersistedFilesIntoWorker = useCallback(async (envId: string) => {
+    const ws = getWorkerState(envId);
+    if (!ws.worker) return;
+
+    const files = await loadAllFilesFromDB(envId);
+    if (files.length === 0) return;
+
+    await new Promise<void>((resolve) => {
+      const handler = (e: MessageEvent) => {
+        if (e.data.type === "workspace-cleared") {
+          ws.worker?.removeEventListener("message", handler);
+          resolve();
+        }
+      };
+      ws.worker!.addEventListener("message", handler);
+      ws.worker!.postMessage({ type: "clear-workspace" });
+      setTimeout(() => {
+        ws.worker?.removeEventListener("message", handler);
+        resolve();
+      }, 5000);
+    });
+
+    for (const file of files) {
+      ws.worker!.postMessage({ type: "write-file", path: file.path, content: file.content });
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    ws.worker!.postMessage({ type: "list-files" });
+    addLine(envId, "system", `Loaded ${files.length} persisted file(s) from browser storage.`);
+  }, [getWorkerState, addLine]);
+
   const initRuntime = useCallback((envId?: string) => {
     const targetId = envId || activeEnvId;
     destroyWorker(targetId);
@@ -120,6 +217,8 @@ export function useEnvironmentManager() {
 
     const worker = new Worker("/pyodide-worker.js");
     ws.worker = worker;
+
+    const isPersistent = getEnvPersistent(targetId);
 
     worker.onmessage = (e) => {
       const msg = e.data;
@@ -137,7 +236,12 @@ export function useEnvironmentManager() {
           updateEnv(targetId, { status: "ready" });
           ws.statusRef = "ready";
           addLine(targetId, "system", "Runtime ready. Python 3.11 (Pyodide/WASM)");
-          worker.postMessage({ type: "list-files" });
+
+          if (isPersistent) {
+            loadPersistedFilesIntoWorker(targetId).catch(() => {});
+          } else {
+            worker.postMessage({ type: "list-files" });
+          }
           worker.postMessage({ type: "list-packages" });
         } else if (msg.status === "running") {
           updateEnv(targetId, { status: "running" });
@@ -154,21 +258,18 @@ export function useEnvironmentManager() {
           worker.postMessage({ type: "list-files" });
         }
       } else if (msg.type === "snapshot") {
-        setEnvironments(prev => {
-          const env = prev.find(e => e.id === targetId);
-          const envName = env?.name || "env";
-          try {
-            const blob = new Blob([msg.data], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            const safeName = envName.replace(/[^a-zA-Z0-9-_]/g, "_");
-            a.download = `lace-snapshot-${safeName}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-          } catch {}
-          return prev;
-        });
+        const envForSnapshot = environmentsRef.current.find(e => e.id === targetId);
+        const envName = envForSnapshot?.name || "env";
+        try {
+          const blob = new Blob([msg.data], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const safeName = envName.replace(/[^a-zA-Z0-9-_]/g, "_");
+          a.download = `lace-snapshot-${safeName}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch {}
         addLine(targetId, "system", "Snapshot exported.");
       } else if (msg.type === "file-list") {
         updateEnv(targetId, { files: msg.files || [] });
@@ -205,7 +306,7 @@ export function useEnvironmentManager() {
     };
 
     worker.postMessage({ type: "init" });
-  }, [activeEnvId, destroyWorker, getWorkerState, updateEnv, addLine]);
+  }, [activeEnvId, destroyWorker, getWorkerState, updateEnv, addLine, getEnvPersistent, loadPersistedFilesIntoWorker]);
 
   const runCode = useCallback((code: string, timeout = 10000, envId?: string) => {
     const targetId = envId || activeEnvId;
@@ -275,21 +376,33 @@ export function useEnvironmentManager() {
     const ws = getWorkerState(targetId);
     if (!ws.worker) return;
     ws.worker.postMessage({ type: "write-file", path, content });
-  }, [activeEnvId, getWorkerState]);
+
+    if (getEnvPersistent(targetId)) {
+      saveFileToDB(targetId, path, content).catch(() => {});
+    }
+  }, [activeEnvId, getWorkerState, getEnvPersistent]);
 
   const deleteFile = useCallback((path: string, envId?: string) => {
     const targetId = envId || activeEnvId;
     const ws = getWorkerState(targetId);
     if (!ws.worker) return;
     ws.worker.postMessage({ type: "delete-file", path });
-  }, [activeEnvId, getWorkerState]);
+
+    if (getEnvPersistent(targetId)) {
+      deleteFileFromDB(targetId, path).catch(() => {});
+    }
+  }, [activeEnvId, getWorkerState, getEnvPersistent]);
 
   const renameFile = useCallback((oldPath: string, newPath: string, envId?: string) => {
     const targetId = envId || activeEnvId;
     const ws = getWorkerState(targetId);
     if (!ws.worker) return;
     ws.worker.postMessage({ type: "rename-file", path: oldPath, newPath });
-  }, [activeEnvId, getWorkerState]);
+
+    if (getEnvPersistent(targetId)) {
+      renameFileInDB(targetId, oldPath, newPath).catch(() => {});
+    }
+  }, [activeEnvId, getWorkerState, getEnvPersistent]);
 
   const installPackage = useCallback((packageName: string, envId?: string) => {
     const targetId = envId || activeEnvId;
@@ -326,7 +439,9 @@ export function useEnvironmentManager() {
         installingPackage: null,
         color: ENV_COLORS[colorIndex],
         createdAt: Date.now(),
+        persistent: false,
       };
+      saveEnvironmentMeta(envToMeta(newEnv)).catch(() => {});
       return [...prev, newEnv];
     });
     return id;
@@ -340,23 +455,91 @@ export function useEnvironmentManager() {
       const remaining = prev.filter(e => e.id !== envId);
       if (envId === activeEnvId) {
         setActiveEnvId(remaining[0].id);
+        saveActiveEnvToStorage(remaining[0].id);
       }
+      deleteEnvironmentMeta(envId).catch(() => {});
+      clearEnvironmentFiles(envId).catch(() => {});
       return remaining;
     });
   }, [activeEnvId, destroyWorker]);
 
   const renameEnvironment = useCallback((envId: string, newName: string) => {
     updateEnv(envId, { name: newName });
+    const env = environmentsRef.current.find(e => e.id === envId);
+    if (env) {
+      saveEnvironmentMeta(envToMeta({ ...env, name: newName })).catch(() => {});
+    }
   }, [updateEnv]);
 
   const switchEnvironment = useCallback((envId: string) => {
     setActiveEnvId(envId);
+    saveActiveEnvToStorage(envId);
   }, []);
+
+  const togglePersistence = useCallback(async (envId?: string) => {
+    const targetId = envId || activeEnvId;
+    const env = environmentsRef.current.find(e => e.id === targetId);
+    if (!env) return;
+
+    const newPersistent = !env.persistent;
+
+    if (newPersistent) {
+      const ws = getWorkerState(targetId);
+      if (ws.worker && ws.statusRef === "ready") {
+        addLine(targetId, "system", "Enabling persistence — saving current files to browser storage...");
+        try {
+          const result = await new Promise<string>((resolve) => {
+            const handler = (e: MessageEvent) => {
+              if (e.data.type === "snapshot") {
+                ws.worker?.removeEventListener("message", handler);
+                resolve(e.data.data);
+              }
+            };
+            ws.worker!.addEventListener("message", handler);
+            ws.worker!.postMessage({ type: "save-snapshot" });
+            setTimeout(() => {
+              ws.worker?.removeEventListener("message", handler);
+              resolve("[]");
+            }, 5000);
+          });
+
+          const parsed = JSON.parse(result) as { path: string; base64_content: string }[];
+          const files = parsed.map(f => ({
+            path: f.path.replace(/^\/workspace\//, ""),
+            content: atob(f.base64_content),
+          }));
+          await saveAllFilesToDB(targetId, files);
+          addLine(targetId, "system", `Saved ${files.length} file(s) to browser storage.`);
+        } catch {
+          addLine(targetId, "system", "Persistence enabled. Files will be saved on next write.");
+        }
+      } else {
+        addLine(targetId, "system", "Persistence enabled. Files will be saved after runtime is initialized.");
+      }
+    } else {
+      addLine(targetId, "system", "Persistence disabled. Clearing stored files...");
+      await clearEnvironmentFiles(targetId).catch(() => {});
+      addLine(targetId, "system", "Browser storage cleared for this environment.");
+    }
+
+    updateEnv(targetId, { persistent: newPersistent });
+    const envNow = environmentsRef.current.find(e => e.id === targetId);
+    if (envNow) {
+      saveEnvironmentMeta(envToMeta({ ...envNow, persistent: newPersistent })).catch(() => {});
+    }
+  }, [activeEnvId, getWorkerState, addLine, updateEnv]);
+
+  useEffect(() => {
+    if (!restoredFromDB) return;
+    for (const env of environmentsRef.current) {
+      saveEnvironmentMeta(envToMeta(env)).catch(() => {});
+    }
+  }, [restoredFromDB]);
 
   useEffect(() => {
     const workers = workersRef.current;
     return () => {
-      workers.forEach((ws, envId) => {
+      workers.forEach((ws) => {
         if (ws.timeout) clearTimeout(ws.timeout);
         if (ws.worker) ws.worker.terminate();
         ws.pendingReads.forEach(resolve => resolve(""));
@@ -376,6 +559,7 @@ export function useEnvironmentManager() {
     removeEnvironment,
     renameEnvironment,
     switchEnvironment,
+    togglePersistence,
     initRuntime,
     runCode,
     stopExecution,

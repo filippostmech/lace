@@ -277,6 +277,28 @@ del __pkg_name__
     }
   }
 
+  if (type === "clear-workspace") {
+    if (!pyodide) {
+      self.postMessage({ type: "workspace-cleared" });
+      return;
+    }
+    try {
+      pyodide.runPython(`
+import os, shutil
+root = '/workspace'
+for item in os.listdir(root):
+    full = os.path.join(root, item)
+    if os.path.isdir(full):
+        shutil.rmtree(full)
+    else:
+        os.remove(full)
+`);
+      self.postMessage({ type: "workspace-cleared" });
+    } catch (err) {
+      self.postMessage({ type: "workspace-cleared" });
+    }
+  }
+
   if (type === "list-packages") {
     if (!pyodide) {
       self.postMessage({ type: "package-list", packages: [] });

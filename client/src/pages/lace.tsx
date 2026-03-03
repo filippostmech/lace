@@ -58,6 +58,7 @@ export default function LacePage() {
     renameFile,
     installPackage,
     listPackages,
+    togglePersistence,
   } = useEnvironmentManager();
 
   const activeFile = activeFilePerEnv.get(activeEnvId) || null;
@@ -303,6 +304,8 @@ export default function LacePage() {
         onClear={() => clearTerminal()}
         onSaveSnapshot={() => saveSnapshot()}
         onLoadSnapshot={(json) => loadSnapshot(json)}
+        persistent={activeEnv?.persistent}
+        onTogglePersistence={() => togglePersistence()}
       />
 
       <div className="flex-1 overflow-hidden">

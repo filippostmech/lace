@@ -9,6 +9,7 @@ import {
   Upload,
   Cpu,
   Loader2,
+  HardDrive,
 } from "lucide-react";
 import type { RuntimeStatus } from "@/hooks/use-pyodide";
 
@@ -16,12 +17,14 @@ interface ToolbarProps {
   status: RuntimeStatus;
   envName?: string;
   envColor?: string;
+  persistent?: boolean;
   onInit: () => void;
   onRun: () => void;
   onStop: () => void;
   onClear: () => void;
   onSaveSnapshot: () => void;
   onLoadSnapshot: (json: string) => void;
+  onTogglePersistence?: () => void;
 }
 
 const statusConfig: Record<RuntimeStatus, { label: string; color: string }> = {
@@ -36,12 +39,14 @@ export function Toolbar({
   status,
   envName,
   envColor,
+  persistent,
   onInit,
   onRun,
   onStop,
   onClear,
   onSaveSnapshot,
   onLoadSnapshot,
+  onTogglePersistence,
 }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -163,6 +168,23 @@ export function Toolbar({
         onChange={handleFileLoad}
         data-testid="input-snapshot-file"
       />
+
+      {onTogglePersistence && (
+        <>
+          <div className="w-px h-5 bg-[#262626] mx-1" />
+
+          <Button
+            size="sm"
+            variant={persistent ? "default" : "outline"}
+            onClick={onTogglePersistence}
+            className={persistent ? "bg-[hsl(88,50.4%,52.5%)]/15 border-[hsl(88,50.4%,52.5%)]/40 text-[hsl(88,50.4%,52.5%)] hover:bg-[hsl(88,50.4%,52.5%)]/25" : ""}
+            data-testid="button-toggle-persistence"
+          >
+            <HardDrive className="w-3.5 h-3.5" />
+            <span className="ml-1.5">{persistent ? "Persisted" : "Persist"}</span>
+          </Button>
+        </>
+      )}
     </div>
   );
 }

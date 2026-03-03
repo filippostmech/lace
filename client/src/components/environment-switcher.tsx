@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Plus, X } from "lucide-react";
+import { Plus, X, HardDrive } from "lucide-react";
 import type { Environment } from "@/hooks/use-environment-manager";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 
@@ -85,6 +85,10 @@ export function EnvironmentSwitcher({
                     env.status === "running" ? "animate-pulse" : ""
                   }`}
                 />
+
+                {env.persistent && (
+                  <HardDrive className="w-2.5 h-2.5 text-[hsl(88,50.4%,52.5%)] shrink-0 opacity-70" />
+                )}
 
                 {editingId === env.id ? (
                   <input
