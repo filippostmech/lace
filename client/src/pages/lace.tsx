@@ -11,11 +11,14 @@ import { FileExplorer } from "@/components/file-explorer";
 import { PackageInstaller } from "@/components/package-installer";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { StorageManager } from "@/components/storage-manager";
+import { JobsPanel } from "@/components/jobs-panel";
 import { EnvironmentSwitcher } from "@/components/environment-switcher";
 import { useEnvironmentManager } from "@/hooks/use-environment-manager";
+import { useJobExecutor } from "@/hooks/use-job-executor";
 import { clearEnvironmentFiles, clearAllStorage } from "@/lib/persistence";
-import { Terminal, HelpCircle, HardDrive, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Terminal, HelpCircle, HardDrive, PanelLeftClose, PanelLeft, Radio } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 const DEFAULT_CODE = `# Welcome to LACE - Local Agent Compute Environment
 # Write Python code here and click Run (or press Ctrl+Enter)
@@ -35,6 +38,16 @@ export default function LacePage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showStorage, setShowStorage] = useState(false);
+  const [showJobs, setShowJobs] = useState(false);
+
+  const {
+    connectionStatus,
+    recentJobs: jobsList,
+    activeJobCount,
+    connect: connectHost,
+    disconnect: disconnectHost,
+    getHostUrl,
+  } = useJobExecutor();
   const editorRef = useRef<any>(null);
 
   const [activeFilePerEnv, setActiveFilePerEnv] = useState<Map<string, string | null>>(new Map());
@@ -276,6 +289,30 @@ export default function LacePage() {
           <span className="text-[10px] text-muted-foreground font-mono tracking-wider hidden sm:inline">
             Pyodide/WASM &bull; Python 3.11 &bull; {environments.length} env{environments.length !== 1 ? "s" : ""}
           </span>
+          <button
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[#1a1a1a] transition-colors cursor-pointer"
+            onClick={() => setShowJobs(true)}
+            data-testid="button-open-jobs"
+          >
+            <div
+              className={`w-2 h-2 rounded-full ${
+                connectionStatus === "connected"
+                  ? "bg-[hsl(88,50.4%,52.5%)]"
+                  : connectionStatus === "connecting"
+                  ? "bg-yellow-400 animate-pulse"
+                  : "bg-[#444]"
+              }`}
+              data-testid="indicator-agent-connection"
+            />
+            <span className="text-[10px] font-mono text-muted-foreground" data-testid="text-agent-status">
+              {connectionStatus === "connected" ? "Agent" : connectionStatus === "connecting" ? "Connecting" : "Agent"}
+            </span>
+            {activeJobCount > 0 && (
+              <Badge variant="outline" className="text-[9px] font-mono px-1 py-0 h-4 text-blue-400 border-blue-400/30" data-testid="text-active-jobs">
+                {activeJobCount}
+              </Badge>
+            )}
+          </button>
           <Button
             size="icon"
             variant="ghost"
@@ -445,6 +482,16 @@ export default function LacePage() {
       </div>
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+      <JobsPanel
+        open={showJobs}
+        onClose={() => setShowJobs(false)}
+        connectionStatus={connectionStatus}
+        recentJobs={jobsList}
+        activeJobCount={activeJobCount}
+        hostUrl={getHostUrl()}
+        onConnect={connectHost}
+        onDisconnect={disconnectHost}
+      />
       <StorageManager
         open={showStorage}
         onClose={() => setShowStorage(false)}

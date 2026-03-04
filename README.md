@@ -40,32 +40,40 @@
 - **Execution Timeout** — Automatic 10-second timeout with worker termination to prevent runaway scripts
 - **Resizable Split Panes** — Adjustable file explorer, editor, and terminal panels
 - **Keyboard Shortcuts** — Ctrl+Enter to run, Ctrl+S to save snapshot, and more
+- **Agent Jobs API** — External agents (LangGraph, etc.) submit Python jobs via the LACE Host, executed in ephemeral browser workers
 - **Offline Capable** — After initial Pyodide load (~20MB), everything runs locally
 
 ## Architecture
 
-LACE is a **frontend-only application**. The Express backend serves static files only — all Python execution happens client-side in Web Workers.
+LACE has two modes: **manual** (human uses the IDE directly) and **agent** (external agent submits jobs via the LACE Host API). The Express backend serves the React frontend. The LACE Host (separate FastAPI server) provides the agent-facing REST API.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Browser                                                │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  React App (Main Thread)                          │  │
-│  │  ├── Environment Switcher (tabs for N envs)       │  │
-│  │  ├── Monaco Editor                                │  │
-│  │  ├── File Explorer                                │  │
-│  │  ├── Terminal Output                              │  │
-│  │  ├── Package Installer                            │  │
-│  │  └── Storage Manager                              │  │
-│  └──────────────┬────────────────────────────────────┘  │
-│                 │ postMessage (per environment)          │
-│  ┌──────────────▼────────────────────────────────────┐  │
-│  │  Web Worker(s) — one per environment              │  │
-│  │  ├── Pyodide (CPython 3.11 / WASM)                │  │
-│  │  ├── In-memory filesystem (/workspace)            │  │
-│  │  └── micropip (package installer)                 │  │
-│  └───────────────────────────────────────────────────┘  │
-│                                                         │
+┌────────────────────────────────────────────────────────────────┐
+│  Agent (e.g. LangGraph)                                        │
+│  POST /v1/jobs/python ──► LACE Host (FastAPI, port 8080)       │
+│  GET  /v1/jobs/{id}   ◄── returns results                     │
+└────────────────────────────┬───────────────────────────────────┘
+                             │ WebSocket
+┌────────────────────────────▼───────────────────────────────────┐
+│  Browser                                                       │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │  React App (Main Thread)                                  │ │
+│  │  ├── Environment Switcher (tabs for N envs)               │ │
+│  │  ├── Monaco Editor                                        │ │
+│  │  ├── File Explorer                                        │ │
+│  │  ├── Terminal Output                                      │ │
+│  │  ├── Package Installer                                    │ │
+│  │  ├── Storage Manager                                      │ │
+│  │  └── Job Executor (WebSocket client for agent jobs)       │ │
+│  └──────────────┬───────────────────┬────────────────────────┘ │
+│                 │ postMessage        │ postMessage              │
+│  ┌──────────────▼──────────────┐  ┌─▼──────────────────────┐  │
+│  │  User Workers (per env)     │  │  Agent Workers          │  │
+│  │  ├── Pyodide (CPython 3.11) │  │  (ephemeral per job)    │  │
+│  │  ├── /workspace filesystem  │  │  ├── Pyodide            │  │
+│  │  └── micropip               │  │  ├── fresh /workspace   │  │
+│  └─────────────────────────────┘  │  └── terminated on done │  │
+│                                    └────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │  IndexedDB "lace-persistence" (optional)          │  │
 │  │  ├── files store: { envId, path, content }        │  │
@@ -171,6 +179,82 @@ Expand the **Packages** section in the sidebar to install Python packages via mi
 - **Save** — Click Save (or `Ctrl+S`) to export all workspace files as a JSON file
 - **Load** — Click Load to import a previously saved snapshot
 
+## Agent API
+
+LACE can serve as a compute backend for AI agents. The **LACE Host** is a separate FastAPI server that accepts Python execution jobs via REST API and relays them to the browser for execution in ephemeral Pyodide workers.
+
+### Start the LACE Host
+
+```bash
+cd host
+pip install -r requirements.txt
+uvicorn server:app --host 127.0.0.1 --port 8080
+```
+
+API docs: `http://127.0.0.1:8080/docs`
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/jobs/python` | Submit a Python execution job |
+| GET | `/v1/jobs/{id}` | Get job status and results |
+| GET | `/v1/jobs/{id}/stream` | Stream job logs via SSE |
+| DELETE | `/v1/jobs/{id}` | Cancel a running job |
+| GET | `/v1/status` | Check if browser compute node is connected |
+
+### Submit a Job
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/jobs/python \
+  -H "Content-Type: application/json" \
+  -d '{
+    "code": "import numpy as np\nprint(np.random.rand(5))",
+    "packages": ["numpy"],
+    "timeout": 30000
+  }'
+# → { "id": "job_abc123def456", "status": "queued" }
+```
+
+### Get Results
+
+```bash
+curl http://127.0.0.1:8080/v1/jobs/job_abc123def456
+# → { "id": "...", "status": "completed", "stdout": "[0.23 0.87 ...]", ... }
+```
+
+### LangGraph Integration
+
+```python
+import requests
+import time
+
+LACE_HOST = "http://127.0.0.1:8080"
+
+def run_python_in_lace(code: str, packages: list[str] = None) -> dict:
+    """Execute Python code in a browser-based Pyodide sandbox."""
+    resp = requests.post(f"{LACE_HOST}/v1/jobs/python", json={
+        "code": code,
+        "packages": packages or [],
+        "timeout": 30000,
+    })
+    job_id = resp.json()["id"]
+
+    while True:
+        result = requests.get(f"{LACE_HOST}/v1/jobs/{job_id}").json()
+        if result["status"] in ("completed", "failed", "timeout"):
+            return result
+        time.sleep(0.5)
+```
+
+### Browser Connection
+
+The LACE browser app connects to the Host via WebSocket. In the header, a connection indicator shows the status:
+- **Green dot** — Connected to LACE Host, ready to receive jobs
+- **Gray dot** — Disconnected (click to configure Host URL)
+
+Click the indicator to open the Jobs panel where you can configure the Host URL, connect/disconnect, and view job history.
+
 ## Keyboard Shortcuts
 
 | Shortcut          | Action                     |
@@ -186,35 +270,44 @@ Expand the **Packages** section in the sidebar to install Python packages via mi
 lace/
 ├── client/
 │   ├── public/
-│   │   ├── pyodide-worker.js        # Web Worker running Pyodide
+│   │   ├── pyodide-worker.js            # Web Worker running Pyodide
 │   │   └── favicon.png
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── environment-switcher.tsx  # Environment tab bar
 │   │   │   ├── file-explorer.tsx         # Sidebar file tree
+│   │   │   ├── jobs-panel.tsx            # Agent jobs panel (connection, history)
 │   │   │   ├── package-installer.tsx     # Package management UI
 │   │   │   ├── shortcuts-help.tsx        # Keyboard shortcuts overlay
 │   │   │   ├── storage-manager.tsx       # Browser storage viewer/manager
 │   │   │   ├── terminal-output.tsx       # Streaming output display
-│   │   │   ├── toolbar.tsx               # Control buttons + persist toggle
-│   │   │   └── ui/                       # shadcn/ui components
+│   │   │   ├── toolbar.tsx              # Control buttons + persist toggle
+│   │   │   └── ui/                      # shadcn/ui components
 │   │   ├── hooks/
 │   │   │   ├── use-environment-manager.ts # Multi-env lifecycle + persistence
+│   │   │   ├── use-job-executor.ts        # Agent job executor React hook
 │   │   │   └── use-pyodide.ts             # Type definitions
 │   │   ├── pages/
-│   │   │   └── lace.tsx               # Main application page
+│   │   │   └── lace.tsx                 # Main application page
 │   │   ├── lib/
-│   │   │   ├── persistence.ts         # IndexedDB storage layer
-│   │   │   └── utils.ts               # Utility functions
-│   │   ├── App.tsx                    # Root component with routing
-│   │   ├── main.tsx                   # Entry point
-│   │   └── index.css                  # Global styles and design tokens
+│   │   │   ├── job-executor.ts          # WebSocket client + ephemeral worker manager
+│   │   │   ├── persistence.ts           # IndexedDB storage layer
+│   │   │   └── utils.ts                 # Utility functions
+│   │   ├── App.tsx                      # Root component with routing
+│   │   ├── main.tsx                     # Entry point
+│   │   └── index.css                    # Global styles and design tokens
 │   └── index.html
+├── host/
+│   ├── server.py                        # FastAPI app (REST API + WebSocket relay)
+│   ├── models.py                        # Pydantic models (JobRequest, JobResult)
+│   ├── job_store.py                     # In-memory job store
+│   ├── requirements.txt                 # Python dependencies
+│   └── README.md                        # Host quick-start and API docs
 ├── server/
-│   ├── index.ts                       # Server entry point
-│   ├── routes.ts                      # API routes (minimal)
-│   ├── static.ts                      # Static file serving
-│   └── vite.ts                        # Vite dev server integration
+│   ├── index.ts                         # Express server entry point
+│   ├── routes.ts                        # API routes (minimal)
+│   ├── static.ts                        # Static file serving
+│   └── vite.ts                          # Vite dev server integration
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
