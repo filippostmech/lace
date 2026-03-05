@@ -70,13 +70,15 @@ Response:
 
 ## Synchronous Mode
 
-Add `?wait=true` to block until the job completes:
+Add `?wait=true` to block until the job completes and return the full result (no polling needed):
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/v1/jobs/python?wait=true" \
   -H "Content-Type: application/json" \
   -d '{ "code": "print(42)" }'
 ```
+
+Returns the full `JobResult` with `stdout`, `stderr`, `files`, etc. directly.
 
 ## LangGraph Integration
 

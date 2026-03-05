@@ -119,7 +119,7 @@ async def websocket_endpoint(ws: WebSocket):
         browser_ws = None
 
 
-@app.post("/v1/jobs/python", response_model=JobSubmitResponse, status_code=202)
+@app.post("/v1/jobs/python", status_code=202)
 async def submit_job(request: JobRequest, wait: bool = Query(False)):
     if browser_ws is None:
         raise HTTPException(status_code=503, detail="No compute node connected")
@@ -146,7 +146,11 @@ async def submit_job(request: JobRequest, wait: bool = Query(False)):
         timeout_seconds = (request.timeout / 1000) + 30
         result = await store.wait_for_completion(job_id, timeout=timeout_seconds)
         if result:
-            return JobSubmitResponse(id=result.id, status=result.status)
+            return result
+        job = store.get(job_id)
+        if job:
+            return job
+        return JobSubmitResponse(id=job_id, status=JobStatus.QUEUED)
 
     return JobSubmitResponse(id=job_id, status=JobStatus.QUEUED)
 
