@@ -255,6 +255,19 @@ The LACE browser app connects to the Host via WebSocket. In the header, a connec
 
 Click the indicator to open the Jobs panel where you can configure the Host URL, connect/disconnect, and view job history.
 
+### Headless Mode
+
+Run LACE without a visible browser window — ideal for fully automated agent workflows:
+
+```bash
+cd host
+pip install -r requirements.txt
+playwright install chromium
+python headless.py
+```
+
+This starts Express, the LACE Host, and a headless Chromium browser in one command. Once ready, submit jobs via the API as usual. See [host/README.md](host/README.md) for full headless mode documentation and CLI options.
+
 ## Keyboard Shortcuts
 
 | Shortcut          | Action                     |
